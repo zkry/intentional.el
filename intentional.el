@@ -3,7 +3,7 @@
 ;; Author: Zachary Romero
 ;; Maintainer: Zachary Romero
 ;; Version: 0.1.0
-;; Package-Requires: ()
+;; Package-Requires: (org f)
 ;; Homepage: https://github.com/zkry/intentional
 ;; Keywords: productivity
 
@@ -73,13 +73,15 @@
 ;;; intentions and should be replaced.
 ;;; Declarations should take the following form:
 ;;; (name activation-spec permission-list)
-(defvar intentional-global-intentions
+(defconst intentional-global-intentions
   '(("Work on-call" always ("https://*.pagerduty.com/*"))
-    ("Work" (between-on-days "08:00" "18:00" "MTuWThF")
+    ("Work" (between-on-days "08:00" "18:00" (1 2 3 4 5))
      ("https://*.atlassian.net/*"
       "https://github.com/*"
       "https://outlook.office.com/*"
-      "https://golang.org/*"))
+      "https://golang.org/*"
+      "https://*circleci.com/*"
+      "https://accounts.google.com/*"))
     ("Relax" (between "19:00" "21:00") ("https://youtube.com/*")))
   "List of intentions that are constantly present.")
 
@@ -92,7 +94,8 @@
   "The name of the file to output JSON to.")
 
 (defvar intentional-site-groups
-  '(("clojure" "https://clojuredocs.org/*" "https://clojure.org/*" "https://cljdoc.org/*" "https://github.com/*" "https://clojureverse.org/*" "https://stackoverflow.com/*")
+  '(("work" "https://*.atlassian.net/*" "https://github.com/*" "https://outlook.office.com/*" "https://golang.org/*")
+    ("clojure" "https://clojuredocs.org/*" "https://clojure.org/*" "https://cljdoc.org/*" "https://github.com/*" "https://clojureverse.org/*" "https://stackoverflow.com/*")
     ("golang" "https://golang.org/*" "https://github.com/*" "https://godoc.org/*" "https://stackoverflow.com/*"))
   "List of preset groups to add groups of sites easily.")
 
@@ -149,11 +152,7 @@
   ;; TODO: If name already exists throw error
   (let* ((allow-site-str (completing-read "Allowed site pattern (or group ID): "
                                           (mapcar 'car intentional-site-groups)))
-         (allow-site (or (if (string-prefix-p "http" allow-site-str)
-                             (list allow-site-str)
-                           (and (intentional--fetch-group-sites allow-site-str)
-                                (list allow-site-str)))
-                         (error "No group found")))
+         (allow-site (list allow-site-str))
          (name (string-trim name))
          (time-p (string-match "[[:digit:]]?[[:digit:]]:[[:digit:]][[:digit:]]" expire)))
     (if time-p
@@ -176,7 +175,7 @@
   (interactive)
   (unless (equal mode-name "intentional")
     (error "Not in intentional buffer"))
-  (let ((section-name (intentional--section-name))
+  (let ((section-name (get-text-property (point) 'intentional-section))
         (intention-name (get-text-property (point) 'intentional-item)))
     (when (or (not section-name) (not (equal section-name 'temporary)) (not intention-name))
       (error "No temporary intention found at point"))
@@ -215,11 +214,11 @@
         (let ((resolved (intentional--fetch-group-sites first)))
           (if resolved
               (append resolved (intentional--resolve-allow-list (cdr list)))
-            (append first (intentional--resolve-allow-list (cdr list)))))))))
+            (cons first (intentional--resolve-allow-list (cdr list)))))))))
 
 (defun intentional--write-intentions-to-file ()
   "Write all configured intentions to the configured file."
-  (intentional--remove-temporary-intention)
+  ;(intentional--remove-temporary-intention)
   (let* ((data (make-hash-table))
          (groups-data (make-hash-table))
          (clock-allows (intentional--org-clock-allow-list))
@@ -280,7 +279,9 @@
     ('always t)
     (`(between ,start ,end) (intentional--now-between-time start end))
     (`(at ,time) (time-less-p (current-time) time))
-    (`(between-on-days ,start ,end ,days) (intentional--now-between-time start end))))
+    (`(between-on-days ,start ,end ,days)
+     (and (intentional--now-between-time start end)
+          (member (nth 6 (decode-time (current-time))) days)))))
 
 (defun intentional--filter-active (intns)
   "Filter a list of intentions INTNS by whether they are active or not."
@@ -290,12 +291,26 @@
               intns))
 
 ;;; Display ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun intentional--format-dow (dow)
+  "Format days of week list DOW to be human readable."
+  (let ((sorted (sort dow '<))
+        (out ""))
+    (dotimes (n 7 out)
+      (if (and sorted (= (car sorted) n))
+          (progn
+            (setq out (concat out (cond ((= 0 n) "S") ((= 1 n) "M") ((= 2 n) "T") ((= 3 n) "W")
+                                        ((= 4 n) "T") ((= 5 n) "F") ((= 6 n) "S"))))
+            (setq sorted (cdr sorted)))
+        (setq out (concat out "_")))
+      sorted)))
+
 (defun intentional--active-req->string (req)
   "Return the string format of active requirement spec REQ."
   (pcase req
     ('always "always")
     (`(between ,start ,end) (format "%s-%s" start end))
-    (`(between-on-days ,start ,end ,days) (format "%s-%s %s" start end days))
+    (`(between-on-days ,start ,end ,days) (format "%s-%s %s" start end (intentional--format-dow days)))
     (`(at ,ts) (format "at %s" (format-time-string "%H:%M" ts)))))
 
 (defun intentional--face-name-for-status (active-p)
@@ -306,14 +321,16 @@
 
 (defun intentional--format-allow-list-shortened (list)
   "Return an abbreviated string to display to user of site LIST."
-  (if (= 1 (length list))
-      (let* ((item (car list))
-             (url-p (string-prefix-p "http" item))
-             (group-found-p (intentional--fetch-group-sites item)))
-        (cond
-         ((or url-p group-found-p) item)
-         (t (propertize item 'face 'intentional-inactive-face))))
-    (format "%s and %d more" (car list) (1- (length list)))))
+  (cond
+   ((= 1 (length list))
+    (let* ((item (car list))
+           (url-p (string-prefix-p "http" item))
+           (group-found-p (intentional--fetch-group-sites item)))
+      (cond
+       ((or url-p group-found-p t) item) ;; TODO: figure out this logic so not t
+       (t (propertize item 'face 'intentional-inactive-face)))))
+   ((= 0 (length list)) "none")
+   (t (format "%s and %d more" (car list) (1- (length list))))))
 
 (defun intentional-display-help ()
   "Display a help message showing available commands."
@@ -327,53 +344,47 @@
   "Display the browser intentions in mode buffer."
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (insert (propertize "Global Intentions\n" 'face 'intentional-section-heading-face))
-    (seq-do (lambda (intn)
-              (pcase-let ((`(,name ,active ,allow-list) intn))
-                (let* ((active-p (intentional--active-p active))
-                       (name-str (format "%-25s" name))
-                       (active-str (format "%-25s" (intentional--active-req->string active)))
-                       (allow-str (intentional--format-allow-list-shortened allow-list))
-                       (line (format "   %s %s %s\n" name-str active-str allow-str)))
-                  (insert (propertize line 'face (intentional--face-name-for-status active-p))))))
-            intentional-global-intentions)
-    (insert "\n\n")
-    (insert (propertize "org-clock Intentions\n" 'face 'intentional-section-heading-face))
-    (if (not org-clock-current-task)
-        (insert "   no clock item\n")
-      (let* ((name-str (format "%-25s" (intentional--org-clock-name)))
-             (allow-str (intentional--format-allow-list-shortened (intentional--org-clock-allow-list)))
-             (line (format "   %s %25s %s\n" name-str "" allow-str)))
-        (insert (propertize line 'face 'intentional-active-face))))
-    (insert "\n\n")
-    (insert (propertize "Temporary Intentions\n" 'face 'intentional-section-heading-face))
-    (if (not intentional-local-intentions)
-        (insert "   no local intentions")
+    (let ((gi-section-start (point)))
+      (insert (propertize "Global Intentions\n" 'face 'intentional-section-heading-face))
       (seq-do (lambda (intn)
                 (pcase-let ((`(,name ,active ,allow-list) intn))
-                  (let* ((name-str (format "%-25s" name))
+                  (let* ((active-p (intentional--active-p active))
+                         (name-str (format "%-25s" name))
                          (active-str (format "%-25s" (intentional--active-req->string active)))
                          (allow-str (intentional--format-allow-list-shortened allow-list))
                          (line (format "   %s %s %s\n" name-str active-str allow-str)))
-                    (insert (propertize line
-                                        'face 'intentional-active-face
-                                        'intentional-item name)))))
-              intentional-local-intentions))))
+                    (insert (propertize line 'face (intentional--face-name-for-status active-p))))))
+              intentional-global-intentions)
+      (add-text-properties gi-section-start (point) '(intentional-section
+                                                      global)))
 
-(defun intentional--section-name ()
-  "Return the section that the current point is in or nil if in no section."
-  (unless (equal mode-name "intentional")
-    (error "Current buffer not in intentional mode"))
-  (save-excursion
-    (if (equal "" (string-trim (thing-at-point 'line)))
-        nil
-      (beginning-of-line 1)
-      (while (looking-at " ") (forward-line -1))
-      (let ((section-string (string-trim (thing-at-point 'line))))
-        (cond
-         ((equal section-string "Global Intentions") 'global)
-         ((equal section-string "org-clock Intentions") 'org-clock)
-         ((equal section-string "Temporary Intentions") 'temporary))))))
+    (insert "\n\n")
+    (let ((org-clock-section-start (point)))
+      (insert (propertize "org-clock Intentions\n" 'face 'intentional-section-heading-face))
+      (if (not org-clock-current-task)
+          (insert "   no clock item\n")
+        (let* ((name-str (format "%-25s" (intentional--org-clock-name)))
+               (allow-str (intentional--format-allow-list-shortened (intentional--org-clock-allow-list)))
+               (line (format "   %s %25s %s\n" name-str "" allow-str)))
+          (insert (propertize line 'face 'intentional-active-face))))
+      (add-text-properties org-clock-section-start (point) '(intentional-section org-clock)))
+
+    (insert "\n\n")
+    (let ((temporary-section-start (point)))
+      (insert (propertize "Temporary Intentions\n" 'face 'intentional-section-heading-face))
+      (if (not intentional-local-intentions)
+          (insert "   no local intentions")
+        (seq-do (lambda (intn)
+                  (pcase-let ((`(,name ,active ,allow-list) intn))
+                    (let* ((name-str (format "%-25s" (truncate-string-to-width name 25 0 nil t)))
+                           (active-str (format "%-25s" (intentional--active-req->string active)))
+                           (allow-str (intentional--format-allow-list-shortened allow-list))
+                           (line (format "   %s %s %s\n" name-str active-str allow-str)))
+                      (insert (propertize line
+                                          'face 'intentional-active-face
+                                          'intentional-item name)))))
+                intentional-local-intentions))
+      (add-text-properties temporary-section-start (point) '(intentional-section temporary)))))
 
 
 ;;; External Integrations ;;;;;;;;;;;;;;;;;;;;;;
@@ -389,12 +400,12 @@
                       ; I have the todos buffer open when called.
         (org-clock-goto)
         (let* ((allows (org-entry-get (point) "INTENTIONAL_ALLOW"))
-               (items (split-string allows " ")))
-          items)))))
+               (items (and allows (split-string allows " "))))
+          (if allows items '()))))))
 
 (defun intentional--add-org-clock-site (site)
   "Add SITE to intentional allow property."
-  (unless org-clock-current-taks
+  (unless org-clock-current-task
     (error "No current clocked in task"))
   (save-window-excursion
     (org-clock-goto)
