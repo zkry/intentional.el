@@ -29,27 +29,44 @@
 ;;
 
 (require 'org-clock)
-(require 'f)
+(require 'f) ;; TODO: Replace this
 
 ;;; Code:
+(defvar intentional-allow-list-history nil
+  "History var containing previous used items for allow list.")
+(defvar intentional--expiry-history nil
+  "History var containing entered durations.")
+
 (defconst intentional--buffer-name "*intentional*" "Name for intentional buffer.")
+
+(defcustom intentional-save-to-journal
+  t
+  "If non-nil, write all added temporary intentions to journal."
+  :group 'intentional
+  :type 'boolean)
+
+(defcustom intentional-extract-clock-body-urls
+  t
+  "If non-nil, in addition to the INTENTIONAL_ALLOW property,allow all urls found in body."
+  :group 'intentional
+  :type 'boolean)
 
 (defconst intentional-mode-map
   (let ((map (make-sparse-keymap)))
     (prog1 map
       (suppress-keymap map)
       (define-key map "q" #'quit-window)
-      (define-key map "a" #'intentional-add-temporary-intention)
+      (define-key map "t" #'intentional-add-temporary-intention)
+      (define-key map "a" #'intentional-add-site-to-intention)
       (define-key map "m" #'intentional-modify-intention-at-point)
       (define-key map "c" #'intentional-add-clock-intention)
       (define-key map "g" #'intentional-refresh-buffer)
       (define-key map "d" #'intentional-delete-temporary-intention)
+      (define-key map "n" #'intentional-next-item)
+      (define-key map "p" #'intentional-previous-item)
       (define-key map "?" #'intentional-display-help)))
   "Keymap for intentional-mode.")
 
-(defvar intentional-file-name
-  "~/browse-intentions.json"
-  "The name of the file to write browser intentions to.")
 
 (defface intentional-section-heading-face
   '((((class color) (background light)) (:foreground "DarkGoldenrod4"))
@@ -69,19 +86,30 @@
   "Face used to display intentions that are not in effect."
   :group 'intentional)
 
+(defvar intentional-tag-intentions
+  '(("shopping" ("amazon.com/*" "amazon.de/*"))
+    ("deepw" ("mynoise.net/*")))
+  "List of intentions that activate when a tag is on the current clocked item.
+
+This variable should take the form '((tag-string (allow-site ...)) ...).")
+
 ;;; The following variables are for containing the various browser
 ;;; intentions and should be replaced.
 ;;; Declarations should take the following form:
 ;;; (name activation-spec permission-list)
-(defconst intentional-global-intentions
-  '(("Work on-call" always ("https://*.pagerduty.com/*"))
+(defvar intentional-global-intentions
+  '(("Language Goals" always ("translate.google.com/*"))
+    ("Work on-call" always ("https://*.pagerduty.com/*"))
     ("Work" (between-on-days "08:00" "18:00" (1 2 3 4 5))
      ("https://*.atlassian.net/*"
       "https://github.com/*"
       "https://outlook.office.com/*"
       "https://golang.org/*"
       "https://*circleci.com/*"
-      "https://accounts.google.com/*"))
+      "https://accounts.google.com/*"
+      "googleusercontent.com/*"
+      "travelaudience.com/*"
+      "codeclimate.com/*"))
     ("Relax" (between "19:00" "21:00") ("https://youtube.com/*")))
   "List of intentions that are constantly present.")
 
@@ -94,7 +122,7 @@
   "The name of the file to output JSON to.")
 
 (defvar intentional-site-groups
-  '(("work" "https://*.atlassian.net/*" "https://github.com/*" "https://outlook.office.com/*" "https://golang.org/*")
+  '(("work" "https://*.atlassian.net/*" "https://github.com/*" "https://outlook.office.com/*" "https://golang.org/*" "travelaudience.com/*" "circleci.com/*")
     ("clojure" "https://clojuredocs.org/*" "https://clojure.org/*" "https://cljdoc.org/*" "https://github.com/*" "https://clojureverse.org/*" "https://stackoverflow.com/*")
     ("golang" "https://golang.org/*" "https://github.com/*" "https://godoc.org/*" "https://stackoverflow.com/*"))
   "List of preset groups to add groups of sites easily.")
@@ -104,6 +132,15 @@
   "Name and location of file to store extension data."
   :group 'intentional
   :type 'string)
+
+(defun intentional--global-intentions-update-watcher ()
+  "Perform refreshing actions needed when global intention list has changed."
+  (intentional--write-intentions-to-file)
+  (intentional-refresh-buffer))
+
+(add-variable-watcher 'intentional-global-intentions
+                      (lambda (symbol newval operation where)
+                        (run-with-idle-timer 1 nil #'intentional--global-intentions-update-watcher)))
 
 (defun intentional ()
   "Open the UI for viewing/configuring current intentions."
@@ -136,6 +173,21 @@
   (let ((item (seq-find (lambda (l) (equal (car l) name)) intentional-site-groups)))
     (cdr item)))
 
+(defun intentional--allow-list-from-tag (tag1)
+  "Retrieve all allowed items for TAG1."
+  (cadar (seq-filter (lambda (tag-item)
+                      (pcase-let ((`(,tag2 ,a)  tag-item))
+                        (equal tag1 tag2)))
+                   intentional-tag-intentions)))
+
+(defun intentional--allow-list-from-tags (tags)
+  "Return all allow sites for all TAGS."
+  (let ((allow-list '()))
+    (dolist (tag tags allow-list)
+      (let ((associated-allows (intentional--allow-list-from-tag tag)))
+        (when associated-allows
+          (setq allow-list (append allow-list associated-allows)))))))
+
 (defun intentional-delete-temporary-intention ()
   "Delete the intention found at current point."
   (interactive)
@@ -146,29 +198,100 @@
     (intentional-refresh-buffer)
     (intentional--write-intentions-to-file)))
 
-(defun intentional-add-temporary-intention (name expire)
+(defun intentional--read-allowed-site-patter ()
+  "Perform a completing read for allowed site."
+  (completing-read "Allowed site pattern (or group ID): "
+                   (append (mapcar 'car intentional-site-groups) intentional-allow-list-history)
+                   nil
+                   nil
+                   nil
+                   'intentional-allow-list-history))
+
+(defun intentional--parse-duration-string (expire)
+  "Determine how minutes later EXPIRE string indicates."
+  (org-duration-to-minutes expire))
+
+(defun intentional--parse-time-string (expire)
+  "Determine how many minutes until the time string EXPIRE."
+  (let* ((expire-parts (split-string expire ":"))
+         (m (+ (* 60 (string-to-number (car expire-parts)))
+               (string-to-number (cadr expire-parts))))
+         (now (decode-time))
+         (now-m (+ (* 60 (nth 2 now))
+                   (nth 1 now))))
+    (cond
+     ((> m now-m) (- m now-m))
+     ((= m now-m) (* 60 24))
+     ((< m now-m) (- (+ m (* 60 24)) now-m)))))
+
+(defun intentional--read-duration-string ()
+  "Prompt the user for a valid duration string repeatedly asking if invalid.
+
+Returns a list who's fist element is the time that it should end
+and second element is how many seconds later the intention should end."
+  (let ((later-time nil)
+        (is-error nil)
+        (valid))
+    (while (not later-time)
+      (condition-case nil
+          (let* ((prompt (if is-error "Bad Input. Please enter duration (ex. `10m' `1h'): " "Expiry: "))
+                 (expire (read-string prompt nil intentional--expiry-history))
+                 (expire (if (string-match "^[[:digit:]]+m$" expire)
+                             (concat expire "in")
+                           expire))
+                 (mins-later (if (string-match "[012]?[0-9]:[0-9][0-9]" expire)
+                                 (intentional--parse-time-string expire)
+                               (intentional--parse-duration-string expire)))
+                 (secs-later (* 60 mins-later))
+                 (later (+ (* mins-later 60) (time-convert nil 'integer))))
+            (setq later-time (list later secs-later)))
+        (error (setq is-error t))))
+    later-time))
+
+(defun intentional-add-temporary-intention (name)
   "Add a temporary intention with NAME, expiray of EXPIRE, and allow SITE."
-  (interactive "sWhat do you intend to do? \nsExpiry: ")
+  (interactive "sWhat do you intend to do? ")
   ;; TODO: If name already exists throw error
-  (let* ((allow-site-str (completing-read "Allowed site pattern (or group ID): "
-                                          (mapcar 'car intentional-site-groups)))
+  (let* ((later+secs (intentional--read-duration-string))
+         (later-time (car later+secs))
+         (secs-later (cadr later+secs))
+         (allow-site-str (intentional--read-allowed-site-patter))
          (allow-site (list allow-site-str))
-         (name (string-trim name))
-         (time-p (string-match "[[:digit:]]?[[:digit:]]:[[:digit:]][[:digit:]]" expire)))
-    (if time-p
-        ;;(add-to-list 'intentional-local-intentions `(,name (at ,expire) ,allow-site) t)
-        (error "Not implemented")
-      (let* ((mins-later (org-duration-to-minutes expire))
-             (secs-later (* 60 mins-later))
-             (later-time (+ (* mins-later 60) (time-convert nil 'integer))))
-        (add-to-list 'intentional-local-intentions `(,name (at ,later-time) ,allow-site))
-        (run-with-timer secs-later nil
-                        (lambda ()
-                          (intentional--remove-temporary-intention name)
-                          (intentional-refresh-buffer)
-                          (intentional--write-intentions-to-file))))))
+         (name (string-trim name)))
+    (add-to-list 'intentional-local-intentions `(,name (at ,later-time) ,allow-site))
+    (run-with-timer secs-later nil
+                    (lambda ()
+                      (intentional--remove-temporary-intention name)
+                      (intentional-refresh-buffer)
+                      (intentional--write-intentions-to-file)))
+    (when intentional-save-to-journal
+      (intentional--write-to-journal name allow-site-str)))
   (intentional-refresh-buffer)
   (intentional--write-intentions-to-file))
+
+(defun intentional-add-site-to-intention ()
+  "Add a site to the intention at point."
+  (interactive)
+  (let ((section (get-text-property (point) 'intentional-section))
+        (item-name (get-text-property (point) 'intentional-item)))
+    (unless section (error "Nothing found under point"))
+    (cond
+     ((equal 'temporary section)
+      (let ((site-str (intentional--read-allowed-site-patter)))
+        (setq intentional-local-intentions
+              (seq-map (lambda (item)
+                         (let ((name (car item))
+                               (active (cadr item))
+                               (sites (caddr item)))
+                           (if (string-equal name item-name)
+                               (list name active (cons site-str sites))
+                             item)))
+                       intentional-local-intentions))
+        (intentional-refresh-buffer)
+        (intentional--write-intentions-to-file)))
+     ((equal 'org-clock section)
+      (intentional-add-clock-intention))
+     (t (error "Not implemented")))))
 
 (defun intentional-modify-intention-at-point ()
   "Prompt the user to change the site of intention at point."
@@ -183,12 +306,13 @@
                                  (equal (car intn) intention-name))
                                intentional-local-intentions)))
       (when (not intention) (error "No intention found"))
-      (let ((new-site (read-string "New site" (car (nth 2 intention)))))
+      (let ((new-site (read-string "New site " (car (nth 2 intention))))
+            (rest-sites (cdr (nth 2 intention))))
         (setq intentional-local-intentions
               (seq-map (lambda (intn)
                          (if (equal (car intn) intention-name)
                              (let ((active (cadr intn)))
-                               `(,intention-name ,active (,new-site)))
+                               `(,intention-name ,active ,(cons new-site rest-sites)))
                            intn))
                        intentional-local-intentions))
         (intentional-refresh-buffer)
@@ -199,7 +323,7 @@
   (interactive)
   (unless org-clock-current-task
     (error "No item is currently being clocked"))
-  (let ((site (completing-read "Allowed site pattern (or URL): " (mapcar 'car intentional-site-groups))))
+  (let ((site (intentional--read-allowed-site-patter)))
     (intentional--add-org-clock-site site)
     (intentional-refresh-buffer)
     (intentional--write-intentions-to-file)))
@@ -218,7 +342,8 @@
 
 (defun intentional--write-intentions-to-file ()
   "Write all configured intentions to the configured file."
-  ;(intentional--remove-temporary-intention)
+  ;;(intentional--remove-temporary-intention)
+  (message "writing intentions to file")
   (let* ((data (make-hash-table))
          (groups-data (make-hash-table))
          (clock-allows (intentional--org-clock-allow-list))
@@ -290,6 +415,14 @@
                   (intentional--active-p active)))
               intns))
 
+(defun intentional--all-sites-list ()
+  "Return a list of all allowed sites."
+  (let* ((all-intns (append (intentional--filter-active intentional-global-intentions)
+                            intentional-local-intentions) )
+         (sites (apply #'append (mapcar (lambda (intn) (caddr intn)) all-intns)))
+         (clock-sites (intentional--org-clock-allow-list)))
+    (append sites clock-sites)))
+
 ;;; Display ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun intentional--format-dow (dow)
@@ -311,7 +444,11 @@
     ('always "always")
     (`(between ,start ,end) (format "%s-%s" start end))
     (`(between-on-days ,start ,end ,days) (format "%s-%s %s" start end (intentional--format-dow days)))
-    (`(at ,ts) (format "at %s" (format-time-string "%H:%M" ts)))))
+    (`(at ,ts)
+     (let ((days-later (/ (float-time (time-subtract ts (current-time))) 60 60 24)))
+       (if (> days-later 1)
+           (format "at %s+%dd" (format-time-string "%H:%M" ts) (floor days-later))
+         (format "at %s" (format-time-string "%H:%M" ts)))))))
 
 (defun intentional--face-name-for-status (active-p)
   "Return the face to use given active status, ACTIVE-P, of an intention."
@@ -332,17 +469,46 @@
    ((= 0 (length list)) "none")
    (t (format "%s and %d more" (car list) (1- (length list))))))
 
+(defun intentional-next-item ()
+  "Move point to next item."
+  (interactive)
+  (forward-line 1)
+  (while (and (not (= (point) (point-max)))
+              (or (looking-at " ")
+                  (looking-at "\n")
+                  (not (get-text-property (point) 'intentional-section))))
+    (forward-char))
+  (while (not (get-text-property (point) 'intentional-section))
+    (intentional-previous-item)))
+
+(defun intentional-previous-item ()
+  "Move point to next item."
+  (interactive)
+  (forward-line -1)
+  (while (or (looking-at "\n") (not (get-text-property (point) 'intentional-section)))
+    (forward-line -1))
+  (while (looking-at " ")
+    (forward-char 1)))
+
 (defun intentional-display-help ()
   "Display a help message showing available commands."
   (interactive)
-  (message (string-join '("  c  add intention for clocked item"
-                          "  a  add temporary intention"
-                          "  d  delete intention at point")
+  (message (string-join '("  q  quit window"
+                          "  t  add temporary intention"
+                          "  a  add site to intention at point"
+                          "  m  modify intention at point"
+                          "  c  add intention for clocked item"
+                          "  g  refresh buffer"
+                          "  d  delete temporary intention"
+                          "  n  next item"
+                          "  p  previous item"
+                          "  ?  show help")
                         "\n")))
 
 (defun intentional--display ()
   "Display the browser intentions in mode buffer."
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (line (line-number-at-pos)))
     (erase-buffer)
     (let ((gi-section-start (point)))
       (insert (propertize "Global Intentions\n" 'face 'intentional-section-heading-face))
@@ -384,7 +550,23 @@
                                           'face 'intentional-active-face
                                           'intentional-item name)))))
                 intentional-local-intentions))
-      (add-text-properties temporary-section-start (point) '(intentional-section temporary)))))
+      (add-text-properties temporary-section-start (point) '(intentional-section temporary)))
+
+    ;; list of all sites
+    (let ((all-sites (intentional--all-sites-list)))
+      (insert (propertize (format "\n\nAll Sites (%d):\n" (length all-sites))
+                          'face 'intentional-inactive-face))
+      (seq-do (lambda (site)
+                (insert "   " (propertize site 'face 'intentional-inactive-face) "\n"))
+              all-sites))
+    (goto-char (point-min))
+
+    (if line
+        (progn (goto-line line)
+               (while (looking-at " ")
+                 (forward-char 1)))
+      (goto-char (point-max))
+      (intentional-previous-item))))
 
 
 ;;; External Integrations ;;;;;;;;;;;;;;;;;;;;;;
@@ -392,16 +574,39 @@
   "Retrieve name of current org clock item."
   (substring-no-properties org-clock-current-task))
 
+
 (defun intentional--org-clock-allow-list ()
   "Retrieve the list of allowed sites from the current org-clock item."
   (when org-clock-current-task
+    (let* ((clock-data (intentional--org-clock-fetch-data))
+           (allow-list (car clock-data))
+           (tag-list (cadr clock-data))
+           (tag-allow-list (intentional--allow-list-from-tags tag-list)))
+      (append allow-list tag-allow-list))))
+
+(defun intentional--org-clock-fetch-data ()
+  "Return all data associated with current clocked task needed for processing.
+
+The purpose of this function is to do everything in one go vs
+constantly going in and out of the file.  Returns list as
+follows (ALLOW-LIST TAG-LIST)."
+  (when org-clock-current-task
     (save-window-excursion
-      (save-excursion ; TODO I needed these nested save excursions so point doesn't get moved if
-                      ; I have the todos buffer open when called.
-        (org-clock-goto)
-        (let* ((allows (org-entry-get (point) "INTENTIONAL_ALLOW"))
-               (items (and allows (split-string allows " "))))
-          (if allows items '()))))))
+      (org-clock-goto)
+      (save-excursion
+        (save-restriction
+          (org-narrow-to-subtree)
+          (let* ((allows (org-entry-get (point) "INTENTIONAL_ALLOW"))
+                 (items (and allows (split-string allows " ")))
+                 (tags (org-get-tags)))
+            (when intentional-extract-clock-body-urls
+              (while (< (point) (point-max))
+                (when (looking-at "http")
+                  (let ((url (thing-at-point 'url)))
+                    (when url
+                      (setq items (cons url items)))))
+                (forward-char 1)))
+            (list items tags)))))))
 
 (defun intentional--add-org-clock-site (site)
   "Add SITE to intentional allow property."
@@ -422,6 +627,17 @@
 (add-hook 'org-clock-out-hook 'intentional--clock-update)
 (add-hook 'org-clock-cancel-hook 'intentional--clock-update)
 
+
+(defun intentional--write-to-journal (intention-str site)
+  "Write INTENTION-STR and SITE to today's journal entry."
+  (save-window-excursion
+    (org-journal-new-entry nil)
+    (insert intention-str)
+    (insert "\n")
+    (insert site)
+    (org-indent-line)
+    (save-buffer)))
+
 (defun intentional-mode ()
   "Major mode for viewing/editing browse-intentions.json file."
   (interactive)
@@ -432,7 +648,8 @@
         truncate-lines t)
   (buffer-disable-undo)
   (hl-line-mode)
-  (intentional--display))
+  (intentional--display)
+  (intentional--write-intentions-to-file))
 
 (defun intentional-refresh-buffer ()
   "Re-draw the intentional buffer."
@@ -440,7 +657,8 @@
   (when (get-buffer intentional--buffer-name) ;; only refresh if buffer exists
     (with-current-buffer intentional--buffer-name
       (let ((inhibit-read-only t))
-        (intentional--display)))))
+        (intentional--display))))
+  (intentional--write-intentions-to-file))
 
 (defvar intentional--auto-save-timer nil
   "The timer for writing the config file in the background.")
