@@ -1,0 +1,7 @@
+{
+    "name": "intentional",
+    "description": "Simple application to fetch data from Browse by Intention config",
+    "path": "PATH-TO_PYTHON-BINARY",
+    "type": "stdio",
+    "allowed_extensions": [ "intentional@example.org" ]
+}

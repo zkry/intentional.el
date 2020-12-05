@@ -1,0 +1,22 @@
+{
+    "manifest_version": 2,
+    "name": "Browse by Intention",
+    "version": "1.0",
+
+    "description": "Requires intention of browser to be stated in order to visit sites.",
+
+    "icons": {
+        "48": "icons/border-48.png"
+    },
+
+    "permissions": ["nativeMessaging", "notifications", "tabs"],
+    "background": {
+        "scripts": ["background.js"]
+    },
+    "content_scripts": [
+        {
+            "matches": ["*://*/*"],
+            "js": ["intentional.js"]
+        }
+    ]
+}

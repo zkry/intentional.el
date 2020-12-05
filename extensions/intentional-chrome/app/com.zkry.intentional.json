@@ -1,0 +1,9 @@
+{
+    "name": "com.zkry.intentional",
+    "description": "My Application",
+    "path": "PATH-TO-APPLICATION",
+    "type": "stdio",
+    "allowed_origins": [
+        "chrome-extension://CHROME-EXTENSION-ID-HERE/"
+    ]
+}

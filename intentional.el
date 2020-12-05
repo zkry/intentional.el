@@ -1,11 +1,13 @@
 ;;; intentional.el --- UI for configuring what sites you can visit -*- lexical-binding: t -*-
 
-;; Author: Zachary Romero
+;; Copyright © 2020 Zachary Romero <zacromero@posteo.net>
+
+;; Author: Zachary Romero <zacromero@posteo.net>
 ;; Maintainer: Zachary Romero
 ;; Version: 0.1.0
-;; Package-Requires: (org f)
+;; Package-Requires: ((org "9.3") (f "0.17.2"))
 ;; Homepage: https://github.com/zkry/intentional
-;; Keywords: productivity
+;; Keywords: productivity, org-mode
 
 
 ;; This file is not part of GNU Emacs
@@ -25,14 +27,17 @@
 
 
 ;;; Commentary:
-
 ;;
-
-(require 'org-clock)
-(require 'f) ;; TODO: Replace this
-
+;; This file contains all of the code necessary to figure out what
+;; "intentions" are currently active, provide interactive interface
+;; to manipulate intentions, and write them to a file.
+;;
 ;;; Code:
-(defvar intentional-allow-list-history nil
+;;;; Library Requires
+(require 'org-clock)
+(require 'f)
+
+(defvar intentional--allow-list-history nil
   "History var containing previous used items for allow list.")
 (defvar intentional--expiry-history nil
   "History var containing entered durations.")
@@ -87,8 +92,7 @@
   :group 'intentional)
 
 (defvar intentional-tag-intentions
-  '(("shopping" ("amazon.com/*" "amazon.de/*"))
-    ("deepw" ("mynoise.net/*")))
+  nil
   "List of intentions that activate when a tag is on the current clocked item.
 
 This variable should take the form '((tag-string (allow-site ...)) ...).")
@@ -98,23 +102,11 @@ This variable should take the form '((tag-string (allow-site ...)) ...).")
 ;;; Declarations should take the following form:
 ;;; (name activation-spec permission-list)
 (defvar intentional-global-intentions
-  '(("Language Goals" always ("translate.google.com/*"))
-    ("Work on-call" always ("https://*.pagerduty.com/*"))
-    ("Work" (between-on-days "08:00" "18:00" (1 2 3 4 5))
-     ("https://*.atlassian.net/*"
-      "https://github.com/*"
-      "https://outlook.office.com/*"
-      "https://golang.org/*"
-      "https://*circleci.com/*"
-      "https://accounts.google.com/*"
-      "googleusercontent.com/*"
-      "travelaudience.com/*"
-      "codeclimate.com/*"))
-    ("Relax" (between "19:00" "21:00") ("https://youtube.com/*")))
+  nil
   "List of intentions that are constantly present.")
 
 (defvar intentional-local-intentions
-  '(("Mail my mom" (at (24494 59753 933797 0)) ("https://mail.google.com/*"))))
+  nil)
 
 
 (defvar intentional-output-file
@@ -122,16 +114,11 @@ This variable should take the form '((tag-string (allow-site ...)) ...).")
   "The name of the file to output JSON to.")
 
 (defvar intentional-site-groups
-  '(("work" "https://*.atlassian.net/*" "https://github.com/*" "https://outlook.office.com/*" "https://golang.org/*" "travelaudience.com/*" "circleci.com/*")
-    ("clojure" "https://clojuredocs.org/*" "https://clojure.org/*" "https://cljdoc.org/*" "https://github.com/*" "https://clojureverse.org/*" "https://stackoverflow.com/*")
-    ("golang" "https://golang.org/*" "https://github.com/*" "https://godoc.org/*" "https://stackoverflow.com/*"))
-  "List of preset groups to add groups of sites easily.")
+  nil
+  "List of preset groups to add groups of sites easily.
 
-(defcustom intentional-data-file
-  (expand-file-name "intentional-data.eld" user-emacs-directory)
-  "Name and location of file to store extension data."
-  :group 'intentional
-  :type 'string)
+This should be set to a list of lists whose first element is the
+name of the group and rest are the site patterns.")
 
 (defun intentional--global-intentions-update-watcher ()
   "Perform refreshing actions needed when global intention list has changed."
@@ -201,11 +188,11 @@ This variable should take the form '((tag-string (allow-site ...)) ...).")
 (defun intentional--read-allowed-site-patter ()
   "Perform a completing read for allowed site."
   (completing-read "Allowed site pattern (or group ID): "
-                   (append (mapcar 'car intentional-site-groups) intentional-allow-list-history)
+                   (append (mapcar 'car intentional-site-groups) intentional--allow-list-history)
                    nil
                    nil
                    nil
-                   'intentional-allow-list-history))
+                   'intentional--allow-list-history))
 
 (defun intentional--parse-duration-string (expire)
   "Determine how minutes later EXPIRE string indicates."
