@@ -65,6 +65,12 @@ is not allowed.
 
 ## Installation
 
+> NOTICE: Installing the Elisp library is pretty trivial. Currently
+> installing the browser extension is tricky as you have to use a
+> application as an intermediary to read a file on your computer. I
+> intend to make installation easier but the current installation
+> process involves quite a few steps, so be warned.
+
 Due to how browsers work, there are a few steps involved to sending
 data directly to your browser and thus the setup involves three
 components: the elisp library, the data sending intermediary program,
