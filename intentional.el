@@ -36,6 +36,7 @@
 ;;;; Library Requires
 (require 'org-clock)
 (require 'f)
+(require 'intentional-install)
 
 (defvar intentional--allow-list-history nil
   "History var containing previous used items for allow list.")
@@ -109,9 +110,11 @@ This variable should take the form '((tag-string (allow-site ...)) ...).")
   nil)
 
 
-(defvar intentional-output-file
+(defcustom intentional-output-file
   "~/browse-intentions.json"
-  "The name of the file to output JSON to.")
+  "The name of the file to output JSON to."
+  :group 'intentional
+  :type 'string)
 
 (defvar intentional-site-groups
   nil

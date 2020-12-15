@@ -8,6 +8,20 @@
 
 (require 'f)
 
+(defun intentional--chrome-nmh-manifest-location ()
+  "Return the default path of manifest location for chrome."
+  (case system-type
+    ('gnu "~/.config/google-chrome/NativeMessagingHosts/")
+    ('gnu/linux "~/.config/google-chrome/NativeMessagingHosts/")
+    ('darwin "~/Library/Application Support/Google/Chrome/NativeMessagingHosts/")))
+
+(defun intentional--firefox-nmh-manifest-location ()
+  "Return the default path of manifest location for chrome."
+  (case system-type
+    ('gnu "~/.mozilla/native-messaging-hosts/")
+    ('gnu/linux "~/.config/google-chrome/NativeMessagingHosts/")
+    ('darwin "~/Library/Application Support/Mozilla/NativeMessagingHosts/")))
+
 (defvar intentional-python-code
   "#!/usr/bin/python3 -u
 
@@ -16,7 +30,7 @@ import sys
 import struct
 import time
 
-# Encode a message for transmission, given its content.
+# Encode a message for transmission, given its content.qqq
 def encode_message():
     with open('%s', 'r') as file:
         data = file.read()
@@ -59,7 +73,7 @@ while True:
 (defun intentional-install-firefox ()
   "Start the assister for installing intentional on Firefox."
   (interactive)
-  (when (not (y-or-n-p (format "Is '%s' the directory to save file?" intentional-output-file)))
+  (when (not (y-or-n-p (format "Is '%s' the directory to save config file?" intentional-output-file)))
     (error "%s" "set the variable `intentional-output-file' to where you want to save file."))
   (let* ((bi-file (expand-file-name intentional-output-file))
 
@@ -69,18 +83,17 @@ while True:
     (f-write-text py-file-contents 'utf-8 py-file)
     (message "Python file written to %s" py-file)
     (let* ((msg-host-file-dir (read-directory-name "Directory to write Firefox native messaging host manifest: "
-                                                   "~/Library/Application Support/Mozilla/NativeMessagingHosts/"))
+                                                   (intentional--firefox-nmh-manifest-location)))
            (msg-host-file (concat msg-host-file-dir "intentional.json"))
            (msg-host-file-contents (format intentional-firefox-nmh-manifest py-file)))
       (f-write-text msg-host-file-contents 'utf-8 msg-host-file)
       (message "Manifest installed to %s. You can now install the Firefox extension."
                msg-host-file))))
 
-
 (defun intentional-install-chrome ()
   "Start the assister for installing intentional on Firefox."
   (interactive)
-  (when (not (y-or-n-p (format "Is '%s' the directory to save file?" intentional-output-file)))
+  (when (not (y-or-n-p (format "Is '%s' the directory to save config file?" intentional-output-file)))
     (error "Set the variable `intentional-output-file' to where you want to save file"))
   (let ((bi-file (expand-file-name intentional-output-file))
         (chrome-extension-id (read-string "Enter Chrome extension ID (you must install extension to see this): ")))
@@ -92,12 +105,11 @@ while True:
       (f-write-text py-file-contents 'utf-8 py-file)
       (message "Python file written to %s" py-file)
       (let* ((msg-host-file-dir (read-directory-name "Directory to write Chrome native messaging host manifest: "
-                                                     "~/Library/Application Support/Google/Chrome/NativeMessagingHosts"))
-             (msg-host-file (concat msg-host-file-dir "intentional.json"))
+                                                     (intentional--chrome-nmh-manifest-location)))
+             (msg-host-file (concat msg-host-file-dir "com.zkry.intentional.json"))
              (msg-host-file-contents (format intentional-chrome-nmh-manifest py-file chrome-extension-id)))
         (f-write-text msg-host-file-contents 'utf-8 msg-host-file)
         (message "Installation complete")))))
-
 
 (provide 'intentional-install)
 

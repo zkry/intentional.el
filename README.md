@@ -63,9 +63,42 @@ There is also a plugin implementation that is pretty bare-bones but it
 gets the job done.  With it, a screen will obstruct the website if it
 is not allowed.
 
-## Installation
+## Installation (with helpers)
 
-> NOTICE: Installing the Elisp library is pretty trivial. Currently
+intentional.el now contains two functions to assist you in installing
+everything: `intentional-install-chrome` and
+`intentional-install-firefox`.  Using these functions the installation process can be summarized as follows:
+
+Chrome Installation:
+1. First download this repository and install the chrome extension in the `./extensions` subdirectory.
+2. On the `chrome://extensions/` page, copy the ID for the plugin.
+3. Run `intentional-install-chrome`, you will be asked for a
+   confirmation of the location to store the configuration file
+   (browser-intentions.json).  If you want a different location please
+   configure the `intentional-output-file` custom variable.
+4. Paste the copied Chrome extension ID in the prompt
+5. Select a location to save the Python script.
+6. Select the Chrome location to store the NativeMessagingHosts
+   manifest. The default should be to the correct location.  Please
+   note though that if you're using Chromium you may need to change
+   the path. Refer
+   [here](https://developer.chrome.com/docs/apps/nativeMessaging/#native-messaging-host-location)
+   for more information.
+
+Firefox Installation:
+1. Run `intentional-install-firefox`, you will be asked for a
+   confirmation of the location to store the configuration file
+   (browser-intentions.json).  If you want a different location please
+   configure the `intentional-output-file` custom variable.
+2. Select the location to save the Python script.
+3. Select the location to save the NativeMessagingHosts manifest. The
+   default should be where you want to save it but you may need to change the path. Refer [here](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_manifests#Manifest_location) for more information.
+4. Download the repository and manually install the extension (either temporary or via [dev edition](https://stackoverflow.com/questions/47363481/install-a-personal-firefox-web-extension-permanently)). I do intend to publish this extension which would make this step much easier.
+
+## Installation (Manual)
+
+
+> NOTICE: Manually installing the Elisp library is pretty trivial. Currently
 > installing the browser extension is tricky as you have to use a
 > application as an intermediary to read a file on your computer. I
 > intend to make installation easier but the current installation
