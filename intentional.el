@@ -46,8 +46,14 @@
 (defconst intentional--buffer-name "*intentional*" "Name for intentional buffer.")
 
 (defcustom intentional-save-to-journal
-  t
+  nil
   "If non-nil, write all added temporary intentions to journal."
+  :group 'intentional
+  :type 'boolean)
+
+(defcustom intentional-org-roam-create-file
+  nil
+  "If non-nil, open a corresponding org-roam file upon creating an intention."
   :group 'intentional
   :type 'boolean)
 
@@ -238,6 +244,18 @@ and second element is how many seconds later the intention should end."
         (error (setq is-error t))))
     later-time))
 
+(defun intentional--create-org-roam-page (title allow)
+  "Create an org roam page for TITLE, setting ALLOW site to the ROAM_KEY."
+  (let* ((title-with-tags title)
+         (org-roam-capture--info `((title . ,title-with-tags)
+                                   (slug  . ,(funcall org-roam-title-to-slug-function title-with-tags))))
+         (org-roam-capture--context 'title))
+    (setq org-roam-capture-additional-template-props (list :finalize 'find-file))
+    (org-roam-capture--capture)
+    (goto-char (point-min))
+    (end-of-line 1)
+    (insert (concat "\n#+ROAM_KEY: " allow "\n\n"))))
+
 (defun intentional-add-temporary-intention (name)
   "Add a temporary intention with NAME, expiray of EXPIRE, and allow SITE."
   (interactive "sWhat do you intend to do? ")
@@ -255,7 +273,9 @@ and second element is how many seconds later the intention should end."
                       (intentional-refresh-buffer)
                       (intentional--write-intentions-to-file)))
     (when intentional-save-to-journal
-      (intentional--write-to-journal name allow-site-str)))
+      (intentional--write-to-journal name allow-site-str))
+    (when intentional-org-roam-create-file
+      (intentional--create-org-roam-page name allow-site-str)))
   (intentional-refresh-buffer)
   (intentional--write-intentions-to-file))
 
@@ -330,13 +350,15 @@ and second element is how many seconds later the intention should end."
               (append resolved (intentional--resolve-allow-list (cdr list)))
             (cons first (intentional--resolve-allow-list (cdr list)))))))))
 
-(defun intentional--write-intentions-to-file ()
-  "Write all configured intentions to the configured file."
+(defun intentional--write-intentions-to-file (&optional disable-clocked)
+  "Write all configured intentions to the configured file.
+
+If DISABLE-CLOCKED is non-nil then ignore clocked intentions when writing."
   ;;(intentional--remove-temporary-intention)
   (message "writing intentions to file")
   (let* ((data (make-hash-table))
          (groups-data (make-hash-table))
-         (clock-allows (intentional--org-clock-allow-list))
+         (clock-allows (if disable-clocked nil (intentional--org-clock-allow-list)))
          (filtered-global-intentions (intentional--filter-active intentional-global-intentions))
          (intentions (make-vector (+ (if (zerop (length clock-allows)) 0 1)
                                      (length filtered-global-intentions)
@@ -564,7 +586,6 @@ and second element is how many seconds later the intention should end."
   "Retrieve name of current org clock item."
   (substring-no-properties org-clock-current-task))
 
-
 (defun intentional--org-clock-allow-list ()
   "Retrieve the list of allowed sites from the current org-clock item."
   (when org-clock-current-task
@@ -613,10 +634,14 @@ follows (ALLOW-LIST TAG-LIST)."
   (intentional--write-intentions-to-file)
   (intentional-refresh-buffer))
 
-(add-hook 'org-clock-in-hook 'intentional--clock-update)
-(add-hook 'org-clock-out-hook 'intentional--clock-update)
-(add-hook 'org-clock-cancel-hook 'intentional--clock-update)
+(defun intentional--clock-update-out ()
+  "Perform all actions that should occur with cancellation or stopping of clock."
+  (intentional-refresh-buffer)
+  (intentional--write-intentions-to-file t))
 
+(add-hook 'org-clock-in-hook 'intentional--clock-update)
+(add-hook 'org-clock-out-hook 'intentional--clock-update-out)
+(add-hook 'org-clock-cancel-hook 'intentional--clock-update-out)
 
 (defun intentional--write-to-journal (intention-str site)
   "Write INTENTION-STR and SITE to today's journal entry."
